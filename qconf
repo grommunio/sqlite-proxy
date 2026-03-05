@@ -1,0 +1,21 @@
+#!/bin/sh -e
+topdir="${0%/*}"
+if [ "$topdir" = "$0" ]; then
+	topdir=.
+fi
+abstopdir=$(readlink -f "$topdir")
+if [ ! -e "${topdir}/configure" ]; then
+	cd "$topdir"
+	autoreconf -fi
+	cd -
+fi
+echo -en '#include <libHX/string.h>\nint main(void) { HXmc_free(NULL); }' >conftest.c
+libdir=""
+if cc -o conftest conftest.c $(pkg-config --cflags --libs libHX) >/dev/null 2>/dev/null; then
+	libdir=$(ldd conftest 2>/dev/null | perl -lne 'if(m{(\S+)/libc.so.}){print$1;exit}')
+	if [ -n "$libdir" ]; then
+		libdir="--libdir=$libdir"
+		echo "[33m""qconf: Adding $libdir""[0m"
+	fi
+fi
+"$topdir/configure" $libdir CFLAGS="-O0 -g" CXXFLAGS="-O0 -g" "$@"
