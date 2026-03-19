@@ -24,6 +24,11 @@
 #define POPENFD_NULL (nullptr)
 #define POPENFD_KEEP (&popenfd_keepfd_marker)
 
+enum {
+	SQLITE_DEADCONN = 96,
+	SQLITE_PKTERR = 97,
+};
+
 static int popenfd_keepfd_marker;
 
 struct popen_fdset {
@@ -310,6 +315,8 @@ GX_EXPORT int sqlite3_open_v2(const char *filename, sqlite3 **ppDb, int flags,
 		return ret;
 	*ppDb = db.release();
 	return SQLITE_OK;
+} catch (const sw_pkt_error &) {
+	return SQLITE_PKTERR;
 } catch (const std::bad_alloc &) {
 	return SQLITE_NOMEM;
 }
@@ -318,6 +325,24 @@ GX_EXPORT int sqlite3_open(const char *filename, sqlite3 **ppDb)
 {
 	return sqlite3_open_v2(filename, ppDb,
 	       SQLITE_OPEN_READWRITE | SQLITE_OPEN_CREATE, nullptr);
+}
+
+/* testing function */
+extern "C" int sqlite_proxy_close_nodel(sqlite3 *db);
+GX_EXPORT int sqlite_proxy_close_nodel(sqlite3 *db)
+{
+	if (db == nullptr)
+		return SQLITE_OK;
+	auto &dbi = *db->m_impl;
+	{
+		std::lock_guard lk(dbi.mtx);
+		auto &req = dbi.rpc_req;
+		req.clear();
+		req.put_u8(OP_CLOSE);
+		if (!rpc_call(dbi))
+			/* ignore */;
+	}
+	return SQLITE_OK;
 }
 
 GX_EXPORT int sqlite3_close_v2(sqlite3 *db)
@@ -358,7 +383,7 @@ GX_EXPORT int sqlite3_prepare_v2(sqlite3 *db, const char *zSql, int nByte,
 	req.put_i32(nByte);
 	req.put_u64(sid);
 	if (!rpc_call(dbi))
-		return SQLITE_ABORT;
+		return SQLITE_DEADCONN;
 
 	int ret = resp.get_i32();
 	uint8_t has = resp.get_u8();
@@ -381,6 +406,8 @@ GX_EXPORT int sqlite3_prepare_v2(sqlite3 *db, const char *zSql, int nByte,
 		*ppStmt = ps.release();
 	dbi.stmts[sid] = std::move(ps);
 	return ret;
+} catch (const sw_pkt_error &) {
+	return SQLITE_PKTERR;
 } catch (const std::bad_alloc &) {
 	return SQLITE_NOMEM;
 }
@@ -401,7 +428,7 @@ GX_EXPORT int sqlite3_step(sqlite3_stmt *ps) try
 	req.put_u8(OP_STEP);
 	req.put_u64(ps->remote_id);
 	if (!rpc_call(dbi))
-		return SQLITE_ABORT;
+		return SQLITE_DEADCONN;
 
 	int ret   = resp.get_i32();
 	int ncols = resp.get_i32();
@@ -449,11 +476,13 @@ GX_EXPORT int sqlite3_step(sqlite3_stmt *ps) try
 	else
 		dbi.errmsg.clear();
 	return ret;
+} catch (const sw_pkt_error &) {
+	return SQLITE_PKTERR;
 } catch (const std::bad_alloc &) {
 	return SQLITE_NOMEM;
 }
 
-GX_EXPORT int sqlite3_reset(sqlite3_stmt *ps)
+GX_EXPORT int sqlite3_reset(sqlite3_stmt *ps) try
 {
 	if (ps == nullptr)
 		return SQLITE_MISUSE;
@@ -466,10 +495,14 @@ GX_EXPORT int sqlite3_reset(sqlite3_stmt *ps)
 	req.clear();
 	req.put_u8(OP_RESET);
 	req.put_u64(ps->remote_id);
-	return rpc_call(dbi) ? dbi.rpc_resp.get_i32() : SQLITE_ABORT;
+	return rpc_call(dbi) ? dbi.rpc_resp.get_i32() : SQLITE_DEADCONN;
+} catch (const sw_pkt_error &) {
+	return SQLITE_PKTERR;
+} catch (const std::bad_alloc &) {
+	return SQLITE_NOMEM;
 }
 
-GX_EXPORT int sqlite3_finalize(sqlite3_stmt *ps)
+GX_EXPORT int sqlite3_finalize(sqlite3_stmt *ps) try
 {
 	if (ps == nullptr)
 		return SQLITE_OK;
@@ -482,16 +515,20 @@ GX_EXPORT int sqlite3_finalize(sqlite3_stmt *ps)
 	req.clear();
 	req.put_u8(OP_FINALIZE);
 	req.put_u64(ps->remote_id);
-	int ret = rpc_call(dbi) ? dbi.rpc_resp.get_i32() : SQLITE_ABORT;
+	int ret = rpc_call(dbi) ? dbi.rpc_resp.get_i32() : SQLITE_DEADCONN;
 	dbi.stmts.erase(ps->remote_id);
 	return ret;
+} catch (const sw_pkt_error &) {
+	return SQLITE_PKTERR;
+} catch (const std::bad_alloc &) {
+	return SQLITE_NOMEM;
 }
 
-GX_EXPORT int sqlite3_bind_null(sqlite3_stmt *ps, int col)
+GX_EXPORT int sqlite3_bind_null(sqlite3_stmt *ps, int col) try
 {
 	auto db = ps->db.lock();
 	if (db == nullptr)
-		return SQLITE_ABORT;
+		return SQLITE_DEADCONN;
 	auto &dbi = *db;
 	std::lock_guard lk(dbi.mtx);
 	auto &req = dbi.rpc_req;
@@ -499,7 +536,11 @@ GX_EXPORT int sqlite3_bind_null(sqlite3_stmt *ps, int col)
 	req.put_u8(OP_BIND_NULL);
 	req.put_u64(ps->remote_id);
 	req.put_i32(col);
-	return rpc_call(dbi) ? dbi.rpc_resp.get_i32() : SQLITE_ABORT;
+	return rpc_call(dbi) ? dbi.rpc_resp.get_i32() : SQLITE_DEADCONN;
+} catch (const sw_pkt_error &) {
+	return SQLITE_PKTERR;
+} catch (const std::bad_alloc &) {
+	return SQLITE_NOMEM;
 }
 
 GX_EXPORT int sqlite3_bind_int(sqlite3_stmt *ps, int col, int val)
@@ -507,11 +548,12 @@ GX_EXPORT int sqlite3_bind_int(sqlite3_stmt *ps, int col, int val)
 	return sqlite3_bind_int64(ps, col, val);
 }
 
-GX_EXPORT int sqlite3_bind_int64(sqlite3_stmt *ps, int col, sqlite3_int64 val)
+GX_EXPORT int sqlite3_bind_int64(sqlite3_stmt *ps, int col,
+    sqlite3_int64 val) try
 {
 	auto db = ps->db.lock();
 	if (db == nullptr)
-		return SQLITE_ABORT;
+		return SQLITE_DEADCONN;
 	auto &dbi = *db;
 	std::lock_guard lk(dbi.mtx);
 	auto &req = dbi.rpc_req;
@@ -520,15 +562,19 @@ GX_EXPORT int sqlite3_bind_int64(sqlite3_stmt *ps, int col, sqlite3_int64 val)
 	req.put_u64(ps->remote_id);
 	req.put_i32(col);
 	req.put_i64(val);
-	return rpc_call(dbi) ? dbi.rpc_resp.get_i32() : SQLITE_ABORT;
+	return rpc_call(dbi) ? dbi.rpc_resp.get_i32() : SQLITE_DEADCONN;
+} catch (const sw_pkt_error &) {
+	return SQLITE_PKTERR;
+} catch (const std::bad_alloc &) {
+	return SQLITE_NOMEM;
 }
 
 GX_EXPORT int sqlite3_bind_text(sqlite3_stmt *ps, int col, const char *val,
-    int n, void (*xDel)(void *))
+    int n, void (*xDel)(void *)) try
 {
 	auto db = ps->db.lock();
 	if (db == nullptr)
-		return SQLITE_ABORT;
+		return SQLITE_DEADCONN;
 	auto &dbi = *db;
 	std::lock_guard lk(dbi.mtx);
 	auto &req = dbi.rpc_req;
@@ -538,7 +584,7 @@ GX_EXPORT int sqlite3_bind_text(sqlite3_stmt *ps, int col, const char *val,
 		req.put_u8(OP_BIND_NULL);
 		req.put_u64(ps->remote_id);
 		req.put_i32(col);
-		return rpc_call(dbi) ? dbi.rpc_resp.get_i32() : SQLITE_ABORT;
+		return rpc_call(dbi) ? dbi.rpc_resp.get_i32() : SQLITE_DEADCONN;
 	}
 
 	uint32_t len = n >= 0 ? n : strlen(val);
@@ -547,17 +593,21 @@ GX_EXPORT int sqlite3_bind_text(sqlite3_stmt *ps, int col, const char *val,
 	req.put_u64(ps->remote_id);
 	req.put_i32(col);
 	req.put_blob(val, len);
-	return rpc_call(dbi) ? dbi.rpc_resp.get_i32() : SQLITE_ABORT;
+	return rpc_call(dbi) ? dbi.rpc_resp.get_i32() : SQLITE_DEADCONN;
+} catch (const sw_pkt_error &) {
+	return SQLITE_PKTERR;
+} catch (const std::bad_alloc &) {
+	return SQLITE_NOMEM;
 }
 
 GX_EXPORT int sqlite3_bind_blob64(sqlite3_stmt *ps, int col, const void *val,
-    sqlite3_uint64 n, void (*xDel)(void *))
+    sqlite3_uint64 n, void (*xDel)(void *)) try
 {
 	if (n >= 2047 * 1024 * 1024)
 		return SQLITE_TOOBIG;
 	auto db = ps->db.lock();
 	if (db == nullptr)
-		return SQLITE_ABORT;
+		return SQLITE_DEADCONN;
 	auto &dbi = *db;
 	std::lock_guard lk(dbi.mtx);
 	auto &req = dbi.rpc_req;
@@ -566,8 +616,13 @@ GX_EXPORT int sqlite3_bind_blob64(sqlite3_stmt *ps, int col, const void *val,
 	req.put_u64(ps->remote_id);
 	req.put_i32(col);
 	req.put_blob(val, n);
-	return rpc_call(dbi) ? dbi.rpc_resp.get_i32() : SQLITE_ABORT;
+	return rpc_call(dbi) ? dbi.rpc_resp.get_i32() : SQLITE_DEADCONN;
+} catch (const sw_pkt_error &) {
+	return SQLITE_PKTERR;
+} catch (const std::bad_alloc &) {
+	return SQLITE_NOMEM;
 }
+
 
 GX_EXPORT int sqlite3_bind_blob(sqlite3_stmt *ps, int col, const void *val,
     int n, void (*xDel)(void *))
@@ -575,11 +630,11 @@ GX_EXPORT int sqlite3_bind_blob(sqlite3_stmt *ps, int col, const void *val,
 	return sqlite3_bind_blob64(ps, col, val, n, xDel);
 }
 
-GX_EXPORT int sqlite3_bind_double(sqlite3_stmt *ps, int col, double val)
+GX_EXPORT int sqlite3_bind_double(sqlite3_stmt *ps, int col, double val) try
 {
 	auto db = ps->db.lock();
 	if (db == nullptr)
-		return SQLITE_ABORT;
+		return SQLITE_DEADCONN;
 	auto &dbi = *db;
 	std::lock_guard lk(dbi.mtx);
 	auto &req = dbi.rpc_req;
@@ -588,10 +643,14 @@ GX_EXPORT int sqlite3_bind_double(sqlite3_stmt *ps, int col, double val)
 	req.put_u64(ps->remote_id);
 	req.put_i32(col);
 	req.put_double(val);
-	return rpc_call(dbi) ? dbi.rpc_resp.get_i32() : SQLITE_ABORT;
+	return rpc_call(dbi) ? dbi.rpc_resp.get_i32() : SQLITE_DEADCONN;
+} catch (const sw_pkt_error &) {
+	return SQLITE_PKTERR;
+} catch (const std::bad_alloc &) {
+	return SQLITE_NOMEM;
 }
 
-/*
+/**
  * Column accessors (from cached step data, no IPC)
  *
  * Safe without mutex because sqlite3's API contract requires that column
@@ -614,6 +673,7 @@ GX_EXPORT sqlite3_int64 sqlite3_column_int64(sqlite3_stmt *ps, int col)
 		return 0;
 	}
 }
+
 
 GX_EXPORT int sqlite3_column_int(sqlite3_stmt *ps, int col)
 {
@@ -699,7 +759,7 @@ GX_EXPORT int sqlite3_column_count(sqlite3_stmt *ps)
 }
 
 GX_EXPORT int sqlite3_exec(sqlite3 *db, const char *sql,
-    int (*cb)(void *, int, char **, char **), void *arg, char **errmsg)
+    int (*cb)(void *, int, char **, char **), void *arg, char **errmsg) try
 {
 	if (errmsg != nullptr)
 		*errmsg = nullptr;
@@ -716,7 +776,7 @@ GX_EXPORT int sqlite3_exec(sqlite3 *db, const char *sql,
 	req.put_u8(OP_EXEC);
 	req.put_str(sql);
 	if (!rpc_call(dbi))
-		return SQLITE_ABORT;
+		return SQLITE_DEADCONN;
 
 	int ret = resp.get_i32();
 	const char *msg = resp.get_str();
@@ -727,9 +787,13 @@ GX_EXPORT int sqlite3_exec(sqlite3 *db, const char *sql,
 	if (ret != SQLITE_OK && errmsg != nullptr && !dbi.errmsg.empty())
 		*errmsg = strdup(dbi.errmsg.c_str());
 	return ret;
+} catch (const sw_pkt_error &) {
+	return SQLITE_PKTERR;
+} catch (const std::bad_alloc &) {
+	return SQLITE_NOMEM;
 }
 
-GX_EXPORT const char *sqlite3_errmsg(sqlite3 *db)
+GX_EXPORT const char *sqlite3_errmsg(sqlite3 *db) try
 {
 	if (db == nullptr)
 		return "not an error";
@@ -746,6 +810,10 @@ GX_EXPORT const char *sqlite3_errmsg(sqlite3 *db)
 	else
 		dbi.errmsg.clear();
 	return dbi.errmsg.c_str();
+} catch (const sw_pkt_error &) {
+	return sqlite3_errstr(SQLITE_PKTERR);
+} catch (const std::bad_alloc &) {
+	return sqlite3_errstr(SQLITE_NOMEM);
 }
 
 static constexpr const char *const aMsg[] = {
@@ -753,7 +821,7 @@ static constexpr const char *const aMsg[] = {
 	/* SQLITE_ERROR       */ "SQL logic error",
 	/* SQLITE_INTERNAL    */ 0,
 	/* SQLITE_PERM        */ "access permission denied",
-	/* SQLITE_ABORT       */ "query aborted",
+	/* SQLITE_DEADCONN       */ "query aborted",
 	/* SQLITE_BUSY        */ "database is locked",
 	/* SQLITE_LOCKED      */ "database table is locked",
 	/* SQLITE_NOMEM       */ "out of memory",
@@ -782,12 +850,16 @@ static constexpr const char *const aMsg[] = {
 
 GX_EXPORT const char *sqlite3_errstr(int errcode)
 {
+	if (errcode == SQLITE_DEADCONN)
+		return "Connection to sqlite-worker subprocess died";
+	if (errcode == SQLITE_PKTERR)
+		return "Packet error while communicating with subprocess";
 	if (errcode < 0 || static_cast<size_t>(errcode) >= std::size(aMsg))
 		return "unknown error";
 	return aMsg[errcode];
 }
 
-GX_EXPORT sqlite3_int64 sqlite3_last_insert_rowid(sqlite3 *db)
+GX_EXPORT sqlite3_int64 sqlite3_last_insert_rowid(sqlite3 *db) try
 {
 	if (db == nullptr)
 		return 0;
@@ -797,9 +869,13 @@ GX_EXPORT sqlite3_int64 sqlite3_last_insert_rowid(sqlite3 *db)
 	req.clear();
 	req.put_u8(OP_LAST_INSERT_ROWID);
 	return rpc_call(dbi) ? dbi.rpc_resp.get_i64() : 0;
+} catch (const sw_pkt_error &) {
+	return -EILSEQ;
+} catch (const std::bad_alloc &) {
+	return -ENOMEM;
 }
 
-GX_EXPORT int sqlite3_busy_timeout(sqlite3 *db, int ms)
+GX_EXPORT int sqlite3_busy_timeout(sqlite3 *db, int ms) try
 {
 	if (db == nullptr)
 		return SQLITE_MISUSE;
@@ -809,10 +885,14 @@ GX_EXPORT int sqlite3_busy_timeout(sqlite3 *db, int ms)
 	req.clear();
 	req.put_u8(OP_BUSY_TIMEOUT);
 	req.put_i32(ms);
-	return rpc_call(dbi) ? dbi.rpc_resp.get_i32() : SQLITE_ABORT;
+	return rpc_call(dbi) ? dbi.rpc_resp.get_i32() : SQLITE_DEADCONN;
+} catch (const sw_pkt_error &) {
+	return SQLITE_PKTERR;
+} catch (const std::bad_alloc &) {
+	return SQLITE_NOMEM;
 }
 
-GX_EXPORT int sqlite3_txn_state(sqlite3 *db, const char *zSchema)
+GX_EXPORT int sqlite3_txn_state(sqlite3 *db, const char *zSchema) try
 {
 	if (db == nullptr)
 		return SQLITE_TXN_NONE;
@@ -823,6 +903,10 @@ GX_EXPORT int sqlite3_txn_state(sqlite3 *db, const char *zSchema)
 	req.put_u8(OP_TXN_STATE);
 	req.put_str(zSchema);
 	return rpc_call(dbi) ? dbi.rpc_resp.get_i32() : SQLITE_TXN_NONE;
+} catch (const sw_pkt_error &) {
+	return -EILSEQ;
+} catch (const std::bad_alloc &) {
+	return -ENOMEM;
 }
 
 GX_EXPORT const char *sqlite3_db_filename(sqlite3 *db, const char *zDbName) try
@@ -841,8 +925,10 @@ GX_EXPORT const char *sqlite3_db_filename(sqlite3 *db, const char *zDbName) try
 	if (fn != nullptr)
 		dbi.db_filename = fn;
 	return dbi.db_filename.c_str();
+} catch (const sw_pkt_error &) {
+	return sqlite3_errstr(SQLITE_PKTERR);
 } catch (const std::bad_alloc &) {
-	return "memory-allocation-failure";
+	return sqlite3_errstr(SQLITE_NOMEM);
 }
 
 GX_EXPORT sqlite3 *sqlite3_db_handle(sqlite3_stmt *ps)
@@ -853,7 +939,7 @@ GX_EXPORT sqlite3 *sqlite3_db_handle(sqlite3_stmt *ps)
 	return ps->rdb;
 }
 
-GX_EXPORT char *sqlite3_expanded_sql(sqlite3_stmt *ps)
+GX_EXPORT char *sqlite3_expanded_sql(sqlite3_stmt *ps) try
 {
 	if (ps == nullptr)
 		return nullptr;
@@ -870,6 +956,10 @@ GX_EXPORT char *sqlite3_expanded_sql(sqlite3_stmt *ps)
 		return nullptr;
 	const char *sql = dbi.rpc_resp.get_str();
 	return sql != nullptr ? strdup(sql) : nullptr;
+} catch (const sw_pkt_error &) {
+	return strdup(sqlite3_errstr(SQLITE_PKTERR));
+} catch (const std::bad_alloc &) {
+	return NULL;
 }
 
 GX_EXPORT const char *sqlite3_sql(sqlite3_stmt *ps)

@@ -1,11 +1,12 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 // SPDX-FileCopyrightText: 2026 grommunio GmbH
+#include <cassert>
 #include <csignal>
+#include <cstdint>
 #include <cstdio>
 #include <cstdlib>
-#include <cstdint>
 #include <cstring>
-#include <cassert>
+#include <dlfcn.h>
 #include <sqlite3.h>
 
 #define CHECK(cond, ...) do { \
@@ -367,6 +368,27 @@ static void test_null_finalize()
 	printf("OK\n");
 }
 
+static void test_unexpected_abort()
+{
+	printf("test_unexpected_abort... ");
+	sqlite3 *db = nullptr;
+	CHECK_OK(sqlite3_open_v2(":memory:", &db, SQLITE_OPEN_READWRITE | SQLITE_OPEN_CREATE, nullptr));
+
+	CHECK_OK(sqlite3_exec(db, "CREATE TABLE t(id INTEGER PRIMARY KEY, name TEXT)", nullptr, nullptr, nullptr));
+	CHECK_OK(sqlite3_exec(db, "INSERT INTO t VALUES(1, 'hello')", nullptr, nullptr, nullptr));
+
+	void *fh = dlopen("libsqlite3.so.0", RTLD_NOW);
+	CHECK(fh != nullptr, "dlopen=NULL");
+	int (*t_close)(sqlite3 *);
+	t_close = reinterpret_cast<decltype(t_close)>(dlsym(fh, "sqlite_proxy_close_nodel"));
+	CHECK(t_close != nullptr, "t_close=NULL");
+	t_close(db);
+	auto ret = sqlite3_exec(db, "INSERT INTO t VALUES(2, 'world')", nullptr, nullptr, nullptr);
+	CHECK(ret == 96, "sqlite3_exec==96");
+	CHECK_OK(sqlite3_close_v2(db));
+	printf("OK\n");
+}
+
 int main()
 {
 	signal(SIGPIPE, SIG_IGN);
@@ -390,6 +412,7 @@ int main()
 	test_multiple_connections();
 	test_config_init_shutdown();
 	test_null_finalize();
+	test_unexpected_abort();
 
 	printf("\n=== All tests passed! ===\n");
 	return 0;

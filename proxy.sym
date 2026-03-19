@@ -1,4 +1,5 @@
 {
 	global:
 	sqlite3_*;
+	sqlite_proxy_*;
 };
