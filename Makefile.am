@@ -21,6 +21,7 @@ noinst_PROGRAMS = testproxy
 sqlite_worker_SOURCES = worker.cpp
 sqlite_worker_LDADD = ${sqlite_LIBS}
 lib_libsqlite3_la_SOURCES = proxy.cpp
-lib_libsqlite3_la_LDFLAGS = -export-symbols-regex ^sqlite3
+lib_libsqlite3_la_LDFLAGS = -Wl,--version-script=${srcdir}/proxy.sym
+EXTRA_lib_libsqlite3_la_DEPENDENCIES = proxy.sym
 testproxy_SOURCES = testproxy.cpp
 testproxy_LDADD = ${sqlite_LIBS}
