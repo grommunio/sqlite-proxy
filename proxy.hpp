@@ -89,19 +89,19 @@ class msg_buf {
 	uint8_t get_u8()
 	{
 		if (m_pos >= m_data.size())
-			throw sw_pkt_error("data larger than bytes available");
+			throw sw_pkt_error("get_u8: data larger than bytes available");
 		return m_data[m_pos++];
 	}
 	uint32_t get_u32() {
 		if (m_pos + 4 > m_data.size())
-			throw sw_pkt_error("data larger than bytes available");
+			throw sw_pkt_error("get_u32: data larger than bytes available");
 		auto v = le32p_to_cpu(&m_data[m_pos]);
 		m_pos += 4;
 		return v;
 	}
 	uint32_t get_u64() {
 		if (m_pos + 8 > m_data.size())
-			throw sw_pkt_error("data larger than bytes available");
+			throw sw_pkt_error("get_u64: data larger than bytes available");
 		auto v = le64p_to_cpu(&m_data[m_pos]);
 		m_pos += 8;
 		return v;
@@ -112,7 +112,7 @@ class msg_buf {
 	double get_double()
 	{
 		if (m_pos + 8 > m_data.size())
-			throw sw_pkt_error("data larger than bytes available");
+			throw sw_pkt_error("get_double: data larger than bytes available");
 		auto w = le64p_to_cpu(&m_data[m_pos]);
 		double v;
 		memcpy(&v, &w, sizeof(v));
@@ -143,7 +143,7 @@ class msg_buf {
 			return nullptr;
 		}
 		if (m_pos + out_len > m_data.size())
-			throw sw_pkt_error("data larger than bytes available");
+			throw sw_pkt_error("get_blob: data larger than bytes available");
 		const void *p = &m_data[m_pos];
 		m_pos += out_len;
 		return p;

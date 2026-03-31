@@ -473,7 +473,8 @@ GX_EXPORT int sqlite3_step(sqlite3_stmt *ps) try
 	else
 		dbi.errmsg.clear();
 	return ret;
-} catch (const sw_pkt_error &) {
+} catch (const sw_pkt_error &e) {
+	fprintf(stderr, "sqlite3_step: %s\n", e.what());
 	return SQLITE_PKTERR;
 } catch (const std::bad_alloc &) {
 	return SQLITE_NOMEM;
