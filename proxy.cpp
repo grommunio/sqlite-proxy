@@ -229,7 +229,6 @@ struct sqlite3i : public std::enable_shared_from_this<sqlite3i> {
 
 	int read_fd = -1, write_fd = -1;
 	pid_t child_pid = -1;
-	uint64_t next_stmt_id = 1;
 	std::string errmsg, db_filename;
 	std::mutex mtx;
 	std::unordered_map<uint64_t, std::unique_ptr<sqlite3_stmt>> stmts;
@@ -374,20 +373,18 @@ GX_EXPORT int sqlite3_prepare_v2(sqlite3 *db, const char *zSql, int nByte,
 
 	auto &dbi = *db->m_impl;
 	std::lock_guard lk(dbi.mtx);
-	uint64_t sid = dbi.next_stmt_id++;
 	auto &req  = dbi.rpc_req;
 	auto &resp = dbi.rpc_resp;
 	req.clear();
 	req.put_u8(OP_PREPARE_V2);
 	req.put_str(zSql);
 	req.put_i32(nByte);
-	req.put_u64(sid);
 	if (!rpc_call(dbi))
 		return SQLITE_DEADCONN;
 
 	int ret = resp.get_i32();
-	uint8_t has = resp.get_u8();
-	if (!has) {
+	auto sid = resp.get_u64();
+	if (sid == 0) {
 		const char *err = resp.get_str();
 		if (err != nullptr)
 			dbi.errmsg = err;
@@ -403,7 +400,7 @@ GX_EXPORT int sqlite3_prepare_v2(sqlite3 *db, const char *zSql, int nByte,
 	ps->rdb       = db;
 	ps->sql_text  = st != nullptr ? st : "";
 	if (ppStmt != nullptr)
-		*ppStmt = ps.release();
+		*ppStmt = ps.get();
 	dbi.stmts[sid] = std::move(ps);
 	return ret;
 } catch (const sw_pkt_error &) {

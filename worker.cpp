@@ -100,7 +100,7 @@ int main() try
 	signal(SIGPIPE, SIG_IGN);
 	msg_buf req;
 	std::unique_ptr<sqlite3, sqlfree> the_db;
-	std::unordered_map<uint64_t, std::unique_ptr<sqlite3_stmt, sqlfree>> prepped;
+	std::unordered_map<uintptr_t, std::unique_ptr<sqlite3_stmt, sqlfree>> prepped;
 
 	while (req.recv(STDIN_FILENO)) {
 		msg_buf resp;
@@ -129,7 +129,6 @@ int main() try
 		case OP_PREPARE_V2: {
 			auto sql     = req.get_str();
 			auto nbyte   = req.get_i32();
-			auto stmt_id = req.get_u64();
 			if (!the_db) {
 				resp.put_i32(SQLITE_MISUSE);
 				resp.put_u8(0);
@@ -140,12 +139,13 @@ int main() try
 			auto ret = sqlite3_prepare_v2(the_db.get(), znul(sql),
 			           nbyte, &HX::unique_tie(stmt), nullptr);
 			resp.put_i32(ret);
-			if (ret == SQLITE_OK && stmt) {
-				prepped[stmt_id] = std::move(stmt);
-				resp.put_u8(1);
-				resp.put_str(sqlite3_sql(prepped[stmt_id].get()));
+			if (ret == SQLITE_OK && stmt != nullptr) {
+				auto id = reinterpret_cast<uintptr_t>(stmt.get());
+				prepped[id] = std::move(stmt);
+				resp.put_u64(id);
+				resp.put_str(sqlite3_sql(prepped[id].get()));
 			} else {
-				resp.put_u8(0);
+				resp.put_u64(0);
 				resp.put_str(sqlite3_errmsg(the_db.get()));
 			}
 			break;
