@@ -60,30 +60,25 @@ class msg_buf {
 
 	void put_str(const char *s)
 	{
-		if (s == nullptr) {
-			put_u32(UINT32_MAX);
-			return;
-		}
-		auto len = static_cast<uint32_t>(strlen(s));
-		put_u32(len);
-		if (len != 0)
-			m_data.append(s, len);
-		m_data += '\0';
+		if (s == nullptr)
+			return put_blob(nullptr, 0);
 		/*
 		 * Always put a \0 on the wire, so that the receiver
 		 * has a C-compatible string (not just a string_view).
 		 */
+		return put_blob(s, static_cast<uint32_t>(strlen(s)) + 1);
 	}
 
 	void put_blob(const void *d, uint32_t len)
 	{
+		put_u32(d != nullptr);
 		if (d == nullptr)
-			len = 0;
+			return;
 		put_u32(len);
-		if (len > 0 && d != nullptr) {
-			auto p = static_cast<const char *>(d);
-			m_data.append(p, len);
-		}
+		if (len == 0)
+			return;
+		auto p = static_cast<const char *>(d);
+		m_data.append(p, len);
 	}
 
 	uint8_t get_u8()
@@ -122,26 +117,24 @@ class msg_buf {
 
 	const char *get_str()
 	{
-		uint32_t len = get_u32();
-		if (len == UINT32_MAX)
+		uint32_t len = 0;
+		auto p = static_cast<const char *>(get_blob(len));
+		if (p == nullptr || len == 0)
 			return nullptr;
-		if (m_pos + len > m_data.size())
-			throw sw_pkt_error("data larger than bytes available");
-		auto p = &m_data[m_pos];
-		if (p[len] != '\0')
-			throw sw_pkt_error("packet format error: string not terminated");
+		if (p[len-1] != '\0')
+			throw sw_pkt_error("get_str: packet format error: string not terminated");
 		/* C string (i.e. \0-terminated) guaranteed now */
-		m_pos += len + 1;
 		return p;
 	}
 
 	const void *get_blob(uint32_t &out_len)
 	{
-		out_len = get_u32();
-		if (out_len == 0) {
+		auto have_blob = get_u32();
+		if (!have_blob) {
 			out_len = 0;
 			return nullptr;
 		}
+		out_len = get_u32();
 		if (m_pos + out_len > m_data.size())
 			throw sw_pkt_error("get_blob: data larger than bytes available");
 		const void *p = &m_data[m_pos];
