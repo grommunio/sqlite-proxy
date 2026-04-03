@@ -78,7 +78,7 @@ AS_IF([test "$with_gnu_ld" != yes], [NO_VSYM=1])
 AC_SUBST([NO_VSYM])
 
 
-PKG_CHECK_MODULES([libHX], [libHX >= 4.28])
+PKG_CHECK_MODULES([libHX], [libHX >= 5.3])
 PKG_CHECK_MODULES([sqlite], [sqlite3])
 
 AC_SUBST([my_CPPFLAGS])
