@@ -94,7 +94,7 @@ class msg_buf {
 		m_pos += 4;
 		return v;
 	}
-	uint32_t get_u64() {
+	uint64_t get_u64() {
 		if (m_pos + 8 > m_data.size())
 			throw sw_pkt_error("get_u64: data larger than bytes available");
 		auto v = le64p_to_cpu(&m_data[m_pos]);
